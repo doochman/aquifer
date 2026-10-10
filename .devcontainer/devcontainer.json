@@ -1,0 +1,28 @@
+{
+  "name": "AQUIFER",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {}
+  },
+  "hostRequirements": {
+    "cpus": 4,
+    "memory": "16gb",
+    "storage": "32gb"
+  },
+  "forwardPorts": [8280, 8095, 8093, 8094, 8283, 8284, 9001],
+  "portsAttributes": {
+    "8280": { "label": "Superset" },
+    "8095": { "label": "Airflow" },
+    "8093": { "label": "Trino" },
+    "8094": { "label": "Redpanda Console" },
+    "8283": { "label": "Flink" },
+    "8284": { "label": "JupyterLab" },
+    "9001": { "label": "MinIO console" }
+  },
+  "postCreateCommand": "./lakehouse init",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python", "redhat.vscode-yaml", "ms-azuretools.vscode-docker"]
+    }
+  }
+}

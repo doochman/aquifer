@@ -1,0 +1,9 @@
+.env
+.env.bak-*
+.pattern/
+.catalog-restore.lock/
+__pycache__/
+*.pyc
+.venv/
+.DS_Store
+backups/

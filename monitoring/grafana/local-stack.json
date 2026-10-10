@@ -1,0 +1,16 @@
+{
+  "uid": "local-lakehouse",
+  "title": "AQUIFER / Platform health",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "30s",
+  "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"id": 1, "title": "Service Readiness (1 = Ready)", "type": "stat", "gridPos": {"x": 0, "y": 0, "w": 24, "h": 5}, "datasource": {"type": "prometheus", "uid": "local-prometheus"}, "targets": [{"expr": "probe_success{job=\"readiness\"}", "legendFormat": "{{instance}}", "instant": true}], "fieldConfig": {"defaults": {"min": 0, "max": 1, "thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []}},
+    {"id": 2, "title": "Flink running jobs", "type": "stat", "gridPos": {"x": 0, "y": 5, "w": 8, "h": 4}, "datasource": {"type": "prometheus", "uid": "local-prometheus"}, "targets": [{"expr": "flink_jobmanager_numRunningJobs", "instant": true}], "fieldConfig": {"defaults": {"thresholds": {"mode": "absolute", "steps": [{"color": "red", "value": null}, {"color": "green", "value": 1}]}}, "overrides": []}},
+    {"id": 3, "title": "Flink checkpoints completed", "type": "stat", "gridPos": {"x": 8, "y": 5, "w": 8, "h": 4}, "datasource": {"type": "prometheus", "uid": "local-prometheus"}, "targets": [{"expr": "max(flink_jobmanager_job_numberOfCompletedCheckpoints)", "instant": true}]},
+    {"id": 4, "title": "Last Flink checkpoint duration", "type": "stat", "gridPos": {"x": 16, "y": 5, "w": 8, "h": 4}, "datasource": {"type": "prometheus", "uid": "local-prometheus"}, "targets": [{"expr": "max(flink_jobmanager_job_lastCheckpointDuration)", "instant": true}], "fieldConfig": {"defaults": {"unit": "ms"}, "overrides": []}},
+    {"id": 5, "title": "Readiness History", "type": "timeseries", "gridPos": {"x": 0, "y": 9, "w": 24, "h": 8}, "datasource": {"type": "prometheus", "uid": "local-prometheus"}, "targets": [{"expr": "probe_success{job=\"readiness\"}", "legendFormat": "{{instance}}"}]},
+    {"id": 6, "title": "Probe Duration", "type": "timeseries", "gridPos": {"x": 0, "y": 17, "w": 24, "h": 8}, "datasource": {"type": "prometheus", "uid": "local-prometheus"}, "targets": [{"expr": "probe_duration_seconds{job=\"readiness\"}", "legendFormat": "{{instance}}"}], "fieldConfig": {"defaults": {"unit": "s"}, "overrides": []}}
+  ]
+}

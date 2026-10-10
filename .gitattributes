@@ -1,0 +1,11 @@
+# Keep line endings stable across macOS, Linux and Windows: scripts that run in Linux
+# containers or under /bin/sh must never be checked out with CRLF.
+* text=auto eol=lf
+
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary

@@ -1,0 +1,25 @@
+#!/bin/sh
+# Thin launcher: finds Python 3.8+ and runs lakehouse.py. Works on macOS, Linux, WSL and Git Bash.
+set -e
+SELF="$0"
+while [ -h "$SELF" ]; do
+  LINK=$(readlink "$SELF")
+  case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
+done
+DIR=$(cd "$(dirname "$SELF")" && pwd)
+
+for candidate in python3 python py; do
+  if command -v "$candidate" >/dev/null 2>&1 &&
+    "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)' >/dev/null 2>&1; then
+    exec "$candidate" "$DIR/lakehouse.py" "$@"
+  fi
+done
+
+cat >&2 <<'MSG'
+Python 3.8 or newer is required to run the launcher and was not found.
+  macOS:          xcode-select --install   (or: brew install python)
+  Ubuntu/Debian:  sudo apt install python3 python3-venv
+  Windows:        use lakehouse.cmd, or run setup.cmd
+Or run ./setup.sh, which checks everything and tells you what is missing.
+MSG
+exit 127

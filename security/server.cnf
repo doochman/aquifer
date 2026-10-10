@@ -1,0 +1,12 @@
+[req]
+prompt = no
+distinguished_name = subject
+[subject]
+CN = trino
+[server_ext]
+basicConstraints = critical,CA:false
+keyUsage = critical,digitalSignature,keyEncipherment
+extendedKeyUsage = serverAuth
+subjectAltName = DNS:trino,DNS:trino-secure,DNS:localhost,IP:127.0.0.1
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer

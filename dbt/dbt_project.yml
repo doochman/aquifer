@@ -1,0 +1,23 @@
+name: aquifer_shop
+version: "1.0.0"
+config-version: 2
+profile: aquifer
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+clean-targets: ["target"]
+
+flags:
+  # Trino here is plain HTTP on the Docker network; this only silences a legacy-behaviour warning.
+  require_certificate_validation: true
+
+models:
+  aquifer_shop:
+    +materialized: table
+    # CREATE OR REPLACE keeps Iceberg history and avoids rename steps on the REST catalog.
+    +on_table_exists: replace
+    +properties:
+      format: "'PARQUET'"
+    streaming:
+      +tags: ["streaming"]

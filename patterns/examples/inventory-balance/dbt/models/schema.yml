@@ -1,0 +1,17 @@
+# managed-by: fluid
+# Generated from fluid contract — do not edit between the sentinels.
+version: 2
+models:
+- name: inventory_balance
+  description: Synthetic Inventory Balance
+  columns:
+  - name: sku
+    data_tests:
+    - not_null
+    - unique
+  - name: warehouse_code
+    data_tests:
+    - not_null
+  - name: available_quantity
+    data_tests:
+    - not_null

@@ -1,0 +1,87 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Shell scripts
+        run: shellcheck -S warning setup.sh lakehouse up.sh flink/submit.sh duckdb/entrypoint.sh security/prepare.sh
+      - name: Python syntax
+        run: python -m py_compile lakehouse.py analytics/bootstrap.py analytics/verify.py patterns/render.py airflow/dags/*.py
+      - name: Compose model
+        run: |
+          python -m pip install --quiet -r patterns/requirements.txt
+          ./lakehouse init
+          ./lakehouse lint
+
+  unit:
+    name: Unit tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.8", "3.12"]
+        exclude:
+          - os: macos-latest
+            python: "3.8"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -r patterns/requirements.txt
+      - run: python lakehouse.py test
+
+  end-to-end:
+    name: End to end (Linux, Docker)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    needs: [lint, unit]
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 -m pip install -r patterns/requirements.txt
+      - name: Start everything and load the demo (Airflow, Trino, Iceberg, Flink, dbt, DuckDB, Superset)
+        run: ./lakehouse quickstart --no-open
+      - name: Acceptance check (endpoints, round trip, dbt tests, DuckDB, Kafka to Flink to Iceberg, every chart)
+        run: ./lakehouse check
+      - name: Catalog restore drill
+        run: ./lakehouse catalog-restore-check
+      - name: Load your own file, back up, restore
+        run: |
+          ./lakehouse load demo/data/support_tickets.csv
+          ./lakehouse backup --yes
+          ./lakehouse sql "DROP TABLE data.support_tickets"
+          ./lakehouse restore backups/*.tar --yes
+          ./lakehouse up
+          test "$(./lakehouse sql --format csv 'SELECT count(*) FROM data.support_tickets' | tail -1 | tr -d '"')" = "300"
+      - name: Stop and resume keeps the data
+        run: |
+          ./lakehouse down
+          ./lakehouse up
+          ./lakehouse sql "SELECT count(*) AS orders FROM shop.orders"
+          ./lakehouse flink
+      - name: Logs on failure
+        if: failure()
+        run: ./lakehouse compose logs --tail=200
+      - name: Clean up
+        if: always()
+        run: ./lakehouse reset --yes

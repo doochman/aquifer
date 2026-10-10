@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /airflow
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /analytics
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /flink
+    schedule:
+      interval: weekly
+  - package-ecosystem: docker
+    directory: /duckdb
+    schedule:
+      interval: weekly
+  - package-ecosystem: pip
+    directory: /patterns
+    schedule:
+      interval: monthly

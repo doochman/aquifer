@@ -1,0 +1,8 @@
+name: local_inventory_acceptance
+version: "1.0.0"
+config-version: 2
+profile: local_inventory_acceptance
+model-paths: [models]
+models:
+  local_inventory_acceptance:
+    +materialized: table

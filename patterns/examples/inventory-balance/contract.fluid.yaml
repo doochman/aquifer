@@ -1,0 +1,55 @@
+fluidVersion: "0.7.4"
+kind: DataProduct
+id: bronze.local.synthetic_inventory_balance
+name: Synthetic Inventory Balance Pattern Acceptance
+description: >-
+  Synthetic three-row inventory dataset used only to prove the local-lakehouse
+  pattern with a different schema. Not an authoritative inventory data product.
+metadata:
+  owner:
+    team: local-pattern-acceptance
+    email: local-pattern@example.invalid
+sovereignty:
+  jurisdiction: EU
+  allowedRegions: [eu-central-1]
+  dataResidency: true
+  crossBorderTransfer: false
+exposes:
+  - exposeId: inventory_balance
+    kind: table
+    title: Synthetic Inventory Balance
+    binding:
+      platform: local
+      format: iceberg
+      location:
+        project: local
+        database: iceberg
+        dataset: demo
+        table: inventory_balance
+        region: eu-central-1
+    contract:
+      schema:
+        - {name: sku, type: STRING, required: true}
+        - {name: warehouse_code, type: STRING, required: true}
+        - {name: available_quantity, type: INTEGER, required: true}
+      dq:
+        rules:
+          - {id: inventory-sku-required, type: completeness, selector: sku, threshold: 1.0, operator: "==", severity: critical}
+          - {id: inventory-sku-unique, type: uniqueness, selector: sku, threshold: 1.0, operator: "==", severity: critical}
+          - {id: inventory-warehouse-required, type: completeness, selector: warehouse_code, threshold: 1.0, operator: "==", severity: error}
+          - {id: inventory-quantity-required, type: completeness, selector: available_quantity, threshold: 1.0, operator: "==", severity: error}
+builds:
+  - id: inventory-balance-local
+    pattern: hybrid-reference
+    engine: dbt
+    repository: ./dbt
+    outputs: [inventory_balance]
+    properties:
+      model: inventory_balance
+      select: +inventory_balance
+      target: local
+    execution:
+      runtime:
+        platform: local
+        executor: LocalExecutor
+        resources: {cpu: "1", memory: "1Gi"}

@@ -1,0 +1,562 @@
+# Core platform: depends on nothing outside this directory. Optional extensions
+# (compose.<name>.yaml) are layered on top by ./lakehouse; see docs/EXTENSIONS.md.
+name: ${COMPOSE_PROJECT_NAME:-aquifer}
+
+x-logging: &stack-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+x-superset-common: &superset-common
+  # Only superset-init builds the image; building the same tag from several services races on a cold start.
+  image: aquifer-superset:4.1.1
+  pull_policy: never
+  profiles: [analytics]
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  logging: *stack-logging
+  environment:
+    SUPERSET_SECRET_KEY: ${SUPERSET_SECRET_KEY:-local-superset-secret-change-me}
+    SUPERSET_METADATA_URI: postgresql+psycopg2://superset:superset-local@postgres:5432/superset
+    SUPERSET_ADMIN_USER: ${SUPERSET_ADMIN_USER:-admin}
+    SUPERSET_ADMIN_PASSWORD: ${SUPERSET_ADMIN_PASSWORD:-local-superset-password}
+  volumes:
+    - superset_home:/app/superset_home
+
+x-airflow-build: &airflow-build
+  context: ./airflow
+  target: base
+
+x-flink-common: &flink-common
+  # Only flink-jobmanager builds the image (see the superset note above).
+  image: aquifer-flink:1.20
+  pull_policy: never
+  profiles: [streaming]
+  logging: *stack-logging
+  security_opt: ["no-new-privileges:true"]
+  environment:
+    MINIO_ROOT_USER: ${MINIO_ROOT_USER:-localadmin}
+    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+    FLINK_PROPERTIES: |
+      jobmanager.rpc.address: flink-jobmanager
+      rest.address: flink-jobmanager
+      rest.bind-address: 0.0.0.0
+      jobmanager.memory.process.size: 1024m
+      taskmanager.memory.process.size: 1536m
+      taskmanager.numberOfTaskSlots: 2
+      parallelism.default: 1
+      execution.checkpointing.interval: 10s
+      state.checkpoints.dir: file:///tmp/flink-checkpoints
+      table.local-time-zone: UTC
+      metrics.reporter.prom.factory.class: org.apache.flink.metrics.prometheus.PrometheusReporterFactory
+      metrics.reporter.prom.port: 9249
+  restart: unless-stopped
+
+x-airflow-common: &airflow-common
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  mem_limit: 1g
+  logging: *stack-logging
+  image: aquifer-airflow:3.3.2
+  pull_policy: never
+  environment: &airflow-environment
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-api-server:8080/execution/
+    AIRFLOW__CORE__PARALLELISM: ${AIRFLOW_PARALLELISM:-2}
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow-local@postgres:5432/airflow
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_USERS: ${AIRFLOW_ADMIN_USER:-admin}:admin
+    AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_PASSWORDS_FILE: /opt/airflow/simple_auth_manager_passwords.json.generated
+    AIRFLOW__API__SECRET_KEY: local-airflow-api-secret-change-me
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: "true"
+    AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-admin}
+    AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-local-airflow-password}
+    MINIO_ROOT_USER: ${MINIO_ROOT_USER:-localadmin}
+    MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+    TRINO_HOST: trino
+    TRINO_PORT: "8080"
+    DBT_PROJECT_DIR: /opt/aquifer/dbt
+    DBT_PROFILES_DIR: /opt/aquifer/dbt
+    DBT_TARGET_PATH: /tmp/dbt/target
+    DBT_LOG_PATH: /tmp/dbt/logs
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags:ro
+    - ./demo:/opt/aquifer/demo:ro
+    - ./dbt:/opt/aquifer/dbt:ro
+    - ./patterns:/opt/aquifer/pattern:ro
+    - airflow_logs:/opt/airflow/logs
+    - airflow_home:/opt/airflow
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    postgres:
+      condition: service_healthy
+  restart: unless-stopped
+
+services:
+  superset-db-init:
+    image: postgres:16.6
+    profiles: [analytics]
+    mem_limit: 128m
+    environment:
+      PGPASSWORD: local-platform-password
+    command:
+      - sh
+      - -ec
+      - |
+        psql -h postgres -U platform -d platform -v ON_ERROR_STOP=1 <<'SQL'
+        SELECT 'CREATE ROLE superset LOGIN PASSWORD ''superset-local''' WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'superset')\gexec
+        SELECT 'CREATE DATABASE superset OWNER superset' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'superset')\gexec
+        SQL
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  superset-init:
+    <<: *superset-common
+    build:
+      context: ./analytics
+    mem_limit: 1g
+    command:
+      - bash
+      - -ec
+      - >-
+        superset db upgrade &&
+        { superset fab create-admin --username "$$SUPERSET_ADMIN_USER" --firstname Local --lastname Analyst --email analyst@local.invalid --password "$$SUPERSET_ADMIN_PASSWORD" || true; } &&
+        superset init &&
+        python /app/analytics/bootstrap.py
+    depends_on:
+      superset-db-init:
+        condition: service_completed_successfully
+      trino:
+        condition: service_started
+    restart: "no"
+
+  superset:
+    <<: *superset-common
+    mem_limit: ${SUPERSET_MEMORY_LIMIT:-2g}
+    command: ["gunicorn", "--bind", "0.0.0.0:8088", "--workers", "2", "--worker-class", "gthread", "--threads", "8", "--timeout", "120", "--access-logfile", "-", "--error-logfile", "-", "superset.app:create_app()"]
+    ports:
+      - "127.0.0.1:${HOST_SUPERSET_PORT:-8280}:8088"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8088/health', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    depends_on:
+      superset-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+  trino-secure:
+    image: trinodb/trino:466
+    profiles: [security-validation]
+    mem_limit: 3g
+    cpus: 2
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    logging: *stack-logging
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ['export TRINO_KEYSTORE_PASSWORD="$$(cat /run/trino-security/keystore.password)" TRINO_INTERNAL_SECRET="$$(cat /run/trino-security/internal-secret)"; rm -f /tmp/trino-launcher.pid; exec /usr/lib/trino/bin/launcher run --etc-dir /etc/trino --pid-file /tmp/trino-launcher.pid -Dnode.id=$$HOSTNAME -Dnode.internal-address=trino-secure']
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-localadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+    ports:
+      - "127.0.0.1:${HOST_TRINO_SECURE_PORT:-8493}:8443"
+    volumes:
+      - trino_security:/run/trino-security:ro
+      - ./security/trino.properties:/etc/trino/config.properties:ro
+      - ./security/password-authenticator.properties:/etc/trino/password-authenticator.properties:ro
+      - ./trino/jvm.config:/etc/trino/jvm.config:ro
+      - ./trino/catalog:/etc/trino/catalog:ro
+      - ./security/access-control.properties:/etc/trino/access-control.properties:ro
+      - ./security/rules.json:/etc/trino/security-rules.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent --cacert /run/trino-security/ca.crt https://localhost:8443/v1/info >/dev/null && /usr/lib/trino/bin/health-check"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 20s
+    restart: "no"
+
+  catalog-restore-db:
+    image: postgres:16.6
+    profiles: [recovery]
+    mem_limit: 512m
+    network_mode: none
+    security_opt: ["no-new-privileges:true"]
+    environment:
+      POSTGRES_USER: restore_drill
+      POSTGRES_DB: restore_drill
+      POSTGRES_HOST_AUTH_METHOD: trust
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U restore_drill -d restore_drill"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    restart: "no"
+
+  redpanda:
+    image: redpandadata/redpanda:v24.3.9
+    mem_limit: 1536m
+    logging: *stack-logging
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=1G
+      - --reserve-memory=0M
+      - --overprovisioned
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:${HOST_KAFKA_PORT:-19092}
+      - --schema-registry-addr=0.0.0.0:8081
+    ports:
+      - "127.0.0.1:${HOST_KAFKA_PORT:-19092}:19092"
+      - "127.0.0.1:${HOST_REGISTRY_PORT:-18081}:8081"
+    volumes:
+      - redpanda_data:/var/lib/redpanda/data
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  console:
+    image: redpandadata/console:v2.8.7
+    mem_limit: 256m
+    environment:
+      KAFKA_BROKERS: redpanda:9092
+      KAFKA_SCHEMAREGISTRY_ENABLED: "true"
+      KAFKA_SCHEMAREGISTRY_URLS: http://redpanda:8081
+    ports:
+      - "127.0.0.1:${HOST_CONSOLE_PORT:-8094}:8080"
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16.6
+    mem_limit: 768m
+    environment:
+      POSTGRES_USER: platform
+      POSTGRES_PASSWORD: local-platform-password
+      POSTGRES_DB: platform
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U platform -d platform"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    restart: unless-stopped
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    mem_limit: 1g
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-localadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+    ports:
+      - "127.0.0.1:${HOST_MINIO_API_PORT:-9000}:9000"
+      - "127.0.0.1:${HOST_MINIO_CONSOLE_PORT:-9001}:9001"
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+
+  storage-init:
+    image: aquifer-airflow:3.3.2
+    pull_policy: never
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-localadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+      EXTRA_BUCKETS: ${EXTRA_BUCKETS:-}
+    volumes:
+      - ./airflow/scripts:/opt/airflow/scripts:ro
+    command: ["python", "/opt/airflow/scripts/init_storage.py"]
+    depends_on:
+      - minio
+    restart: "no"
+
+  iceberg-rest:
+    image: tabulario/iceberg-rest:1.6.0
+    mem_limit: 1g
+    environment:
+      CATALOG_WAREHOUSE: s3://warehouse/
+      CATALOG_CATALOG__IMPL: org.apache.iceberg.jdbc.JdbcCatalog
+      CATALOG_URI: jdbc:postgresql://postgres:5432/iceberg
+      CATALOG_JDBC_USER: iceberg
+      CATALOG_JDBC_PASSWORD: iceberg-local
+      CATALOG_IO__IMPL: org.apache.iceberg.aws.s3.S3FileIO
+      CATALOG_S3_ENDPOINT: http://minio:9000
+      CATALOG_S3_PATH__STYLE__ACCESS: "true"
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER:-localadmin}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+      AWS_REGION: us-east-1
+    depends_on:
+      postgres:
+        condition: service_healthy
+      storage-init:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  trino:
+    image: trinodb/trino:466
+    mem_limit: ${TRINO_MEMORY_LIMIT:-3g}
+    cpus: ${TRINO_CPUS:-2}
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    logging: *stack-logging
+    entrypoint: ["/bin/sh", "-ec"]
+    command: ["rm -f /tmp/trino-launcher.pid; exec /usr/lib/trino/bin/launcher run --etc-dir /etc/trino --pid-file /tmp/trino-launcher.pid -Dnode.id=$$HOSTNAME"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-localadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+    ports:
+      - "127.0.0.1:${HOST_TRINO_PORT:-8093}:8080"
+    volumes:
+      - ./trino/catalog:/etc/trino/catalog:ro
+      - ./trino/jvm.config:/etc/trino/jvm.config:ro
+      - ./trino/config.properties:/etc/trino/config.properties:ro
+    depends_on:
+      - iceberg-rest
+      - storage-init
+    restart: unless-stopped
+
+  airflow-init:
+    <<: *airflow-common
+    build: *airflow-build
+    command:
+      - bash
+      - -ec
+      - >-
+        python -c 'import json, os; path="/opt/airflow/simple_auth_manager_passwords.json.generated"; json.dump({os.environ["AIRFLOW_ADMIN_USER"]: os.environ["AIRFLOW_ADMIN_PASSWORD"]}, open(path, "w"))' &&
+        airflow db migrate
+    restart: "no"
+
+  airflow-api-server:
+    <<: *airflow-common
+    command: api-server
+    ports:
+      - "127.0.0.1:${HOST_AIRFLOW_PORT:-8095}:8080"
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-scheduler:
+    <<: *airflow-common
+    mem_limit: ${AIRFLOW_SCHEDULER_MEMORY:-3g}
+    cpus: 2
+    command: scheduler
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  airflow-dag-processor:
+    <<: *airflow-common
+    command: dag-processor
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+
+  duckdb:
+    build:
+      context: ./duckdb
+    image: aquifer-duckdb:1.3.2
+    mem_limit: 1g
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    logging: *stack-logging
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-localadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /home/duck/init.sql"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      - minio
+      - iceberg-rest
+    restart: unless-stopped
+
+  notebook:
+    build:
+      context: ./notebook
+    image: aquifer-notebook:1.0
+    profiles: [notebook]
+    mem_limit: ${NOTEBOOK_MEMORY_LIMIT:-2g}
+    # Runs as your user id so files you create in ./notebooks stay yours on Linux hosts.
+    user: "${NOTEBOOK_UID:-1000}:0"
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    logging: *stack-logging
+    environment:
+      NOTEBOOK_TOKEN: ${NOTEBOOK_TOKEN:-local-notebook-token-change-me}
+      TRINO_HOST: trino
+      TRINO_PORT: "8080"
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-localadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-local-minio-password}
+    ports:
+      - "127.0.0.1:${HOST_NOTEBOOK_PORT:-8284}:8888"
+    volumes:
+      - ./notebooks:/work
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request; urllib.request.urlopen('http://localhost:8888/api', timeout=3)\""]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    depends_on:
+      - trino
+      - iceberg-rest
+    restart: unless-stopped
+
+  topics-init:
+    image: redpandadata/redpanda:v24.3.9
+    profiles: [streaming]
+    mem_limit: 128m
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        rpk topic create shop.orders --partitions 1 -X brokers=redpanda:9092 \
+          || rpk topic describe shop.orders -X brokers=redpanda:9092 > /dev/null
+    depends_on:
+      redpanda:
+        condition: service_healthy
+    restart: "no"
+
+  flink-jobmanager:
+    <<: *flink-common
+    build:
+      context: ./flink
+    command: jobmanager
+    mem_limit: 1536m
+    ports:
+      - "127.0.0.1:${HOST_FLINK_PORT:-8283}:8081"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8081/overview > /dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    depends_on:
+      redpanda:
+        condition: service_healthy
+      iceberg-rest:
+        condition: service_started
+
+  flink-taskmanager:
+    <<: *flink-common
+    command: taskmanager
+    mem_limit: 2g
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+
+  flink-submit:
+    <<: *flink-common
+    command: ["sh", "/opt/aquifer/flink/submit.sh"]
+    mem_limit: 768m
+    volumes:
+      - ./flink:/opt/aquifer/flink:ro
+    depends_on:
+      flink-jobmanager:
+        condition: service_healthy
+      flink-taskmanager:
+        condition: service_started
+      topics-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  prometheus:
+    image: prom/prometheus:v2.51.2
+    profiles: [observability]
+    mem_limit: 512m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    logging: *stack-logging
+    command: ["--config.file=/etc/prometheus/prometheus.yaml", "--storage.tsdb.retention.time=7d", "--storage.tsdb.retention.size=1GB"]
+    ports:
+      - "127.0.0.1:${HOST_PROMETHEUS_PORT:-8290}:9090"
+    volumes:
+      - ./monitoring/prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - ./monitoring/alerts.yaml:/etc/prometheus/alerts.yaml:ro
+      - ./.pattern/targets:/etc/prometheus/targets:ro
+      - prometheus_data:/prometheus
+    restart: unless-stopped
+
+  blackbox:
+    image: prom/blackbox-exporter:v0.25.0
+    profiles: [observability]
+    mem_limit: 128m
+    security_opt: ["no-new-privileges:true"]
+    command: ["--config.file=/etc/blackbox.yaml"]
+    volumes:
+      - ./monitoring/blackbox.yaml:/etc/blackbox.yaml:ro
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana-oss:11.1.0
+    profiles: [observability]
+    mem_limit: 512m
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "127.0.0.1:${HOST_GRAFANA_PORT:-8291}:3000"
+    volumes:
+      - ./monitoring/grafana/datasources.yaml:/etc/grafana/provisioning/datasources/local.yaml:ro
+      - ./monitoring/grafana/dashboards.yaml:/etc/grafana/provisioning/dashboards/local.yaml:ro
+      - ./monitoring/grafana/local-stack.json:/var/lib/grafana/dashboards/local-stack.json:ro
+      - grafana_data:/var/lib/grafana
+    restart: unless-stopped
+
+  spark:
+    image: apache/spark:3.5.3
+    profiles: [spark]
+    mem_limit: 3g
+    cpus: 2
+    logging: *stack-logging
+    user: "185:0"
+    entrypoint: ["/opt/spark/bin/spark-submit"]
+    command: ["--master", "local[2]", "--driver-memory", "1g", "/opt/streaming/runtime_check.py"]
+    volumes:
+      - ./streaming:/opt/streaming:ro
+      - spark_checkpoints:/opt/spark/checkpoints
+    depends_on:
+      spark-storage-init:
+        condition: service_completed_successfully
+    restart: "no"
+
+  spark-storage-init:
+    image: alpine:3
+    profiles: [spark]
+    command: ["sh", "-ec", "chown 185:0 /checkpoints; chmod 775 /checkpoints"]
+    volumes:
+      - spark_checkpoints:/checkpoints
+    restart: "no"
+
+volumes:
+  trino_security:
+    name: ${COMPOSE_PROJECT_NAME:-aquifer}_trino_security
+  prometheus_data:
+  grafana_data:
+  superset_home:
+  spark_checkpoints:
+  airflow_home:
+  airflow_logs:
+  minio_data:
+  postgres_data:
+  redpanda_data:

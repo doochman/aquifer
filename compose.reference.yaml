@@ -1,0 +1,115 @@
+# Extension: Customer Profile 360 reference deployment (Telekom data-products repo).
+# Enable with `extensions: [reference]` in pattern.yaml or LAKEHOUSE_EXTENSIONS=reference in .env.
+# Needs the sibling checkouts ../customer-profile-360-reference and ../telco-data-products,
+# plus the shared Jenkins volume that holds the reference deployment. See docs/EXTENSIONS.md.
+
+x-reference-airflow: &reference-airflow
+  image: aquifer-airflow:3.3.2-reference
+  environment:
+    FLUID_PROJECT_DIR: /opt/customer-profile-deployment/current
+    FLUID_BIN: /opt/customer-profile-deployment/current/scripts/fluid_trino.sh
+    FLUID_DAG_ENV_PASSTHROUGH: TRINO_HOST TRINO_PORT
+    FLUID_DEPLOY_LOCK_DIR: /opt/customer-profile-locks
+  volumes:
+    - ../customer-profile-360-reference:/opt/customer-profile-360:ro
+    - ../telco-data-products/data-products/domain-01-customer-party/silver/A-DP-01-001_customer_profile_360/contract.fluid.yaml:/opt/canonical-customer-profile-360/contract.fluid.yaml:ro
+    - type: volume
+      source: jenkins_reference
+      target: /opt/customer-profile-deployment
+      read_only: true
+      volume:
+        subpath: customer-profile-deployment
+    - type: volume
+      source: jenkins_reference
+      target: /opt/airflow/dags/extensions/reference
+      read_only: true
+      volume:
+        subpath: customer-profile-deployment/dags
+    - type: volume
+      source: jenkins_reference
+      target: /opt/customer-profile-locks
+      volume:
+        subpath: customer-profile-deployment/locks
+  depends_on:
+    reference-lock-init:
+      condition: service_completed_successfully
+
+x-reference-superset: &reference-superset
+  environment:
+    # Principal that the contract declares as a reader of the profile table.
+    SUPERSET_GOVERNED_PRINCIPAL: group:customer-analytics@telekom.de
+
+services:
+  airflow-init:
+    <<: *reference-airflow
+    build:
+      context: ./airflow
+      target: reference
+      additional_contexts:
+        guards: ../customer-profile-360-reference
+  airflow-api-server: *reference-airflow
+  airflow-scheduler: *reference-airflow
+  airflow-dag-processor: *reference-airflow
+
+  storage-init:
+    environment:
+      EXTRA_BUCKETS: customer-profile-360
+
+  trino:
+    volumes:
+      - ./reference/trino/access-control.properties:/etc/trino/access-control.properties:ro
+      - type: volume
+        source: jenkins_reference
+        target: /etc/trino/profile-policy
+        read_only: true
+        volume:
+          subpath: customer-profile-deployment/policy
+
+  superset-init: *reference-superset
+  superset: *reference-superset
+
+  reference-lock-init:
+    image: alpine:3
+    mem_limit: 32m
+    command: ["sh", "-ec", "mkdir -p /deployment/locks; chmod 1777 /deployment/locks"]
+    volumes:
+      - type: volume
+        source: jenkins_reference
+        target: /deployment
+        volume:
+          subpath: customer-profile-deployment
+    restart: "no"
+
+  profile-showcase:
+    image: aquifer-airflow:3.3.2-reference
+    pull_policy: never
+    mem_limit: 512m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    command: ["python", "/opt/customer-profile-showcase/server.py"]
+    environment:
+      TRINO_HOST: trino
+      TRINO_PORT: "8080"
+      SHOWCASE_PORT: "8088"
+      TRINO_REQUEST_TIMEOUT_SECONDS: ${TRINO_REQUEST_TIMEOUT_SECONDS:-10}
+      CUSTOMER_PROFILE_CANONICAL_CONTRACT: /opt/canonical-customer-profile-360/contract.fluid.yaml
+    ports:
+      - "127.0.0.1:${HOST_SHOWCASE_PORT:-8200}:8088"
+    volumes:
+      - ../customer-profile-360-reference/showcase:/opt/customer-profile-showcase:ro
+      - ../customer-profile-360-reference:/opt/customer-profile-360:ro
+      - type: volume
+        source: jenkins_reference
+        target: /opt/customer-profile-deployment
+        read_only: true
+        volume:
+          subpath: customer-profile-deployment
+      - ../telco-data-products/data-products/domain-01-customer-party/silver/A-DP-01-001_customer_profile_360/contract.fluid.yaml:/opt/canonical-customer-profile-360/contract.fluid.yaml:ro
+    depends_on:
+      - trino
+    restart: unless-stopped
+
+volumes:
+  jenkins_reference:
+    external: true
+    name: ${JENKINS_REFERENCE_VOLUME:-tdp-jenkins_sm_jenkins_home}

@@ -1,0 +1,17 @@
+version: 1
+pattern: local-lakehouse
+# small: about 8 GB of Docker memory is enough. medium: use it when Docker has 16 GB or more.
+preset: small
+# Optional parts started with the core. Override per run with `./lakehouse up --with observability`.
+#   analytics     Apache Superset dashboards
+#   streaming     Apache Flink: Kafka topic shop.orders -> Iceberg table shop.order_events
+#   observability Prometheus and Grafana
+#   spark         a bounded Spark structured-streaming check
+profiles:
+  - analytics
+  - streaming
+# Extra compose layers: reference (Customer Profile 360 data-products reference, see docs/EXTENSIONS.md).
+extensions: []
+# Ports and secrets in .env take precedence over these generated defaults.
+ports: {}
+resources: {}

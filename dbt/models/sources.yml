@@ -1,0 +1,38 @@
+version: 2
+
+sources:
+  - name: shop
+    description: Raw synthetic shop data loaded by `./lakehouse demo` (batch) and by Flink (streaming).
+    schema: shop
+    tables:
+      - name: customers
+        columns:
+          - name: customer_id
+            data_tests: [unique, not_null]
+      - name: products
+        columns:
+          - name: product_id
+            data_tests: [unique, not_null]
+      - name: orders
+        columns:
+          - name: order_id
+            data_tests: [unique, not_null]
+          - name: customer_id
+            data_tests:
+              - not_null
+              - relationships:
+                  to: source('shop', 'customers')
+                  field: customer_id
+          - name: status
+            data_tests:
+              - accepted_values:
+                  values: [completed, refunded, cancelled]
+      - name: order_events
+        description: Order events written by the Flink job `aquifer-orders-to-iceberg` from the Kafka topic shop.orders.
+        columns:
+          - name: event_id
+            data_tests:
+              # Only exists when the streaming profile runs, so it is excluded from the default build.
+              - not_null:
+                  config:
+                    tags: [streaming]

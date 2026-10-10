@@ -1,0 +1,17 @@
+{
+  "impersonation": [],
+  "queries": [
+    {"user": "customer-profile-reference|showcase|airflow", "allow": ["execute"]}
+  ],
+  "catalogs": [
+    {"user": "customer-profile-reference|showcase|airflow", "catalog": "iceberg", "allow": "read-only"},
+    {"allow": "none"}
+  ],
+  "tables": [
+    {"user": "customer-profile-reference|showcase|airflow", "catalog": "iceberg", "privileges": ["SELECT"]}
+  ],
+  "schemas": [],
+  "system_information": [],
+  "system_session_properties": [],
+  "catalog_session_properties": []
+}

@@ -1,0 +1,40 @@
+groups:
+  - name: local-stack
+    rules:
+      - alert: LocalServiceNotReady
+        expr: probe_success{job="readiness"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Local service is not ready: {{ $labels.instance }}'
+          description: 'Run ./lakehouse status and inspect the named service logs with ./lakehouse logs.'
+      - alert: LocalMetricsUnavailable
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: 'Metrics scrape failed: {{ $labels.job }} / {{ $labels.instance }}'
+      - alert: CustomerProfileStale
+        expr: customer_profile_freshness_seconds > 21600
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Customer Profile synthetic snapshot exceeds its six-hour freshness SLO
+          description: 'Check the generated Airflow DAG and its latest run. Synthetic evidence is not authoritative consent.'
+      - alert: CustomerProfileEmpty
+        expr: customer_profile_count == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Customer Profile has no snapshot rows
+      - alert: CustomerProfileQualityFailed
+        expr: customer_profile_quality_violations > 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: Customer Profile live quality check failed

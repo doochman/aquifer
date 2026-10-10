@@ -1,0 +1,44 @@
+version: 2
+
+models:
+  - name: orders_enriched
+    description: One row per order joined with customer and product attributes.
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+
+  - name: daily_revenue
+    description: Revenue per day, country and category.
+    columns:
+      - name: order_date
+        data_tests: [not_null]
+      - name: country
+        data_tests: [not_null]
+      - name: net_revenue
+        data_tests: [not_null]
+
+  - name: customer_value
+    description: One row per customer with lifetime value and lifecycle status.
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+      - name: value_tier
+        data_tests:
+          - accepted_values:
+              values: [gold, silver, bronze, no_orders]
+      - name: lifecycle_status
+        data_tests:
+          - accepted_values:
+              values: [active, at_risk, lapsed, never_ordered]
+
+  - name: monthly_cohorts
+    description: Cohort retention by months since signup.
+    columns:
+      - name: cohort_size
+        data_tests: [not_null]
+
+  - name: live_orders_by_hour
+    description: Hourly rollup of the order events landed by Flink.
+    columns:
+      - name: event_hour
+        data_tests: [not_null]

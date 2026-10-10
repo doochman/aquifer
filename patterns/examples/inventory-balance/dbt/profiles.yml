@@ -1,0 +1,13 @@
+local_inventory_acceptance:
+  target: local
+  outputs:
+    local:
+      type: trino
+      method: none
+      user: local-pattern-acceptance
+      host: "{{ env_var('TRINO_HOST', 'localhost') }}"
+      port: "{{ env_var('TRINO_PORT', '8093') | int }}"
+      database: iceberg
+      schema: demo
+      http_scheme: http
+      threads: 1
