@@ -18,7 +18,7 @@ jobs:
     name: Lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -44,7 +44,7 @@ jobs:
           - os: macos-latest
             python: "3.8"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -57,7 +57,7 @@ jobs:
     timeout-minutes: 45
     needs: [lint, unit]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - run: python3 -m pip install -r patterns/requirements.txt
       - name: Start everything and load the demo (Airflow, Trino, Iceberg, Flink, dbt, DuckDB, Superset)
         run: ./lakehouse quickstart --no-open
