@@ -1133,8 +1133,30 @@ def cmd_status(args) -> int:
     return 1 if failures else 0
 
 
+LOGIN_CONTAINERS = {"superset": ["superset"], "airflow": ["airflow-api-server"], "minio": ["minio"], "notebook": ["notebook"]}
+
+
+def login_records(stack: Stack) -> List[dict]:
+    """Logins as data, for tools such as `containers` that show them next to each container."""
+    records = []
+    for service in stack.active_services():
+        if service.login:
+            user = stack.env.get(service.login[0]) or ("localadmin" if service.key == "minio" else "admin")
+            secret = stack.env.get(service.login[1], "")
+        elif service.token_env:
+            user, secret = "(token)", stack.env.get(service.token_env, "")
+        else:
+            continue
+        records.append({"service": service.key, "label": service.label, "url": stack.url(service), "user": user, "password": secret,
+                        "containers": LOGIN_CONTAINERS.get(service.key, [service.key])})
+    return records
+
+
 def cmd_info(args) -> int:
     stack = Stack.load()
+    if args.json:
+        print(json.dumps({"project": stack.project, "logins": login_records(stack) if args.show_secrets else []}, indent=2))
+        return 0
     heading("Endpoints")
     print_endpoints(stack, show_secrets=args.show_secrets)
     say(f"\n  Project {stack.project}; preset {stack.effective['preset']}; profiles {', '.join(stack.profiles) or 'none'}; extensions {', '.join(stack.extensions) or 'none'}")
@@ -1400,7 +1422,13 @@ def cmd_demo(args, stack: Optional[Stack] = None) -> int:
     if "analytics" in stack.profiles and not args.skip_dashboards:
         if "superset" in stack.running_services():
             say("\nSeeding Superset (connection, datasets, charts, dashboards) ...")
-            result = stack.compose("exec", "-T", "superset", "python", "/app/analytics/bootstrap.py", check=False)
+            result = None
+            for attempt in range(3):  # a freshly started Superset can refuse its first exec; retry before giving up
+                result = stack.compose("exec", "-T", "superset", "python", "/app/analytics/bootstrap.py", check=False, capture=True)
+                if result.returncode == 0:
+                    break
+                time.sleep(10)
+            say("\n".join(line for line in (result.stdout or "").splitlines() if line.startswith("[analytics]") or result.returncode != 0))
             if result.returncode == 0:
                 say(f"Dashboard: http://localhost:{stack.port('superset')}{SUPERSET_DASHBOARD}")
                 if streaming:
@@ -1879,6 +1907,7 @@ def build_parser() -> argparse.ArgumentParser:
     restart.add_argument("service", nargs="?")
     add("status", cmd_status, "show containers and probe every endpoint (non-zero when something is down)", aliases=["ps"])
     info = add("info", cmd_info, "print URLs and logins", aliases=["urls"])
+    info.add_argument("--json", action="store_true", help="logins as JSON (needs --show-secrets)")
     info.add_argument("--show-secrets", action="store_true", help="print passwords from .env")
     connect = add("connect", cmd_connect, "connection snippets for DBeaver, Python, dbt, S3 and Kafka tools", aliases=["connections"])
     connect.add_argument("--show-secrets", action="store_true", help="print the MinIO secret key from .env")
