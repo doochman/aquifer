@@ -43,6 +43,9 @@ sudo usermod -aG docker "$USER"      # then log out and back in
 - `python3-venv` is split out on Debian-based systems; the launcher needs it once to install PyYAML into `.pattern/venv`.
 - If `docker-compose-v2` is not available for your release (Ubuntu 20.04, older Debian), install Docker from
   [Docker's apt repository](https://docs.docker.com/engine/install/ubuntu/), which includes the Compose plugin.
+- Snap-packaged Docker (`/snap/bin/docker`) runs under AppArmor, which can refuse to start any container that sets
+  `no-new-privileges`. `./lakehouse up` and `./lakehouse doctor` detect this and write `.pattern/compose.compat.yaml`, which
+  drops only that option on this machine (needs Compose 2.24.4+). Docker's apt packages above avoid the problem entirely.
 - Other distributions: install Docker Engine plus the Compose plugin and Python 3.8+ with your package manager.
 
 ## Windows 10 and 11
