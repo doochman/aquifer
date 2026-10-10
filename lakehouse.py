@@ -831,23 +831,60 @@ def print_endpoints(stack: Stack, show_secrets: bool = False) -> None:
         say("  (reveal passwords with: ./lakehouse info --show-secrets)")
 
 
+SERVICE_ROLES = {
+    "superset": "Charts and dashboards on your Iceberg tables. Start here: Dashboards > Shop overview.",
+    "airflow": "Scheduler. Runs the dbt marts (DAG shop_marts) and the smoke test on a schedule.",
+    "trino": "SQL engine. Queries Iceberg tables; catalog iceberg, schema shop.",
+    "console": "Browse Kafka topics and messages (Redpanda). Orders arrive on shop.orders.",
+    "flink": "Stream processing. Job aquifer-orders-to-iceberg writes Kafka events into Iceberg.",
+    "notebook": "JupyterLab with Python access to the lakehouse.",
+    "minio": "S3-compatible object storage. Holds the Iceberg data and metadata files.",
+    "registry": "Schema Registry for Kafka message schemas.",
+    "grafana": "Platform health dashboards.",
+    "prometheus": "Metrics store behind Grafana.",
+    "showcase": "Customer Profile 360 reference showcase.",
+}
+
+HOME_COMMANDS = [
+    ("Run it", [("./lakehouse up", "start (or resume) the stack"), ("./lakehouse down", "stop, keep data"), ("./lakehouse status", "probe every service"),
+                ("./lakehouse doctor", "check Docker, memory, ports"), ("./lakehouse logs superset", "follow one service's logs")]),
+    ("Query", [("./lakehouse sql", "Trino shell"), ("./lakehouse duckdb", "DuckDB shell, tables under lake.shop"),
+               ("./lakehouse load file.csv", "load a CSV/TSV/JSONL into Iceberg"), ("./lakehouse connect", "DBeaver, Python, dbt, S3, Kafka snippets")]),
+    ("Build", [("./lakehouse dbt build", "rebuild the staging and mart models"), ("./lakehouse stream --events 500", "Kafka > Flink > Iceberg"),
+               ("./lakehouse demo", "reload the sample shop and dashboards"), ("./lakehouse flink", "show Flink jobs")]),
+    ("Look after it", [("./lakehouse info --show-secrets", "URLs and passwords"), ("./lakehouse backup", "archive all data"),
+                       ("./lakehouse reset", "delete everything and start clean")]),
+]
+
+HOME_TABLES = [
+    ("products, customers, orders", "raw sample shop (synthetic Acme Outdoor)"),
+    ("order_events", "orders streamed through Kafka and Flink"),
+    ("daily_revenue, customer_value", "dbt marts that feed the dashboards"),
+]
+
+
 def write_home(stack: Stack) -> Path:
-    """A local landing page with live status dots, generated with the configured ports."""
+    """A one-page welcome and cheatsheet with live status dots, generated with the configured ports."""
     cards = []
     for service in stack.active_services():
         login = ""
         if service.login:
-            login = f"<small>user <code>{html.escape(stack.env.get(service.login[0], ''))}</code> - password in <code>.env</code></small>"
+            login = f"user <code>{html.escape(stack.env.get(service.login[0]) or ('localadmin' if service.key == 'minio' else 'admin'))}</code>, password in <code>.env</code>"
         elif service.note:
-            login = f"<small>{html.escape(service.note)}</small>"
+            login = html.escape(service.note)
+        role = html.escape(SERVICE_ROLES.get(service.key, ""))
         cards.append(
             f'<a class="card" href="{html.escape(stack.url(service, token=True))}" target="_blank" rel="noopener"><span class="dot" data-probe="{html.escape(stack.probe_url(service))}"></span>'
-            f"<b>{html.escape(service.label)}</b><span>{html.escape(stack.url(service))}</span>{login}</a>")
-    try_it = ("<li><code>./lakehouse demo</code> loads the Acme Outdoor shop, runs dbt and seeds the dashboards</li>"
-              "<li><code>./lakehouse sql</code> opens a Trino shell on <code>iceberg.shop</code>; <code>./lakehouse duckdb</code> queries the same tables with DuckDB</li>"
-              "<li><code>./lakehouse stream --events 500</code> sends orders through Kafka and Flink into Iceberg; watch the streaming dashboard</li>"
-              "<li><code>./lakehouse dbt build</code> rebuilds the marts; the Airflow DAG <code>shop_marts</code> does the same on a schedule</li>")
-    page = HOME_TEMPLATE.replace("{{CARDS}}", "\n".join(cards)).replace("{{TRY}}", try_it).replace("{{PROJECT}}", html.escape(stack.project))
+            f"<b>{html.escape(service.label)}</b><span class=\"url\">{html.escape(stack.url(service))}</span><span class=\"role\">{role}</span>"
+            + (f"<small>{login}</small>" if login else "") + "</a>")
+    commands = "".join(
+        f"<div><h3>{html.escape(title)}</h3><dl>" + "".join(f"<dt><code>{html.escape(cmd)}</code></dt><dd>{html.escape(what)}</dd>" for cmd, what in rows) + "</dl></div>"
+        for title, rows in HOME_COMMANDS)
+    tables = "".join(f"<tr><td><code>{html.escape(name)}</code></td><td>{html.escape(what)}</td></tr>" for name, what in HOME_TABLES)
+    dashboard = f"http://localhost:{stack.port('superset')}{SUPERSET_DASHBOARD}" if "analytics" in stack.profiles else ""
+    first = (f'<a class="btn" href="{html.escape(dashboard)}" target="_blank" rel="noopener">Open the shop dashboard</a>' if dashboard else "")
+    page = (HOME_TEMPLATE.replace("{{CARDS}}", "\n".join(cards)).replace("{{COMMANDS}}", commands).replace("{{TABLES}}", tables)
+            .replace("{{FIRST}}", first).replace("{{PROJECT}}", html.escape(stack.project)))
     GENERATED.mkdir(exist_ok=True)
     target = GENERATED / "home.html"
     target.write_text(page, encoding="utf-8")
@@ -855,17 +892,34 @@ def write_home(stack: Stack) -> Path:
 
 
 HOME_TEMPLATE = """<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>AQUIFER - open data stack</title><style>
-:root{color-scheme:dark}body{margin:0;font:16px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:#0d1117;color:#e6edf3}
-main{max-width:980px;margin:0 auto;padding:48px 24px}h1{font-size:2.4rem;margin:0;display:flex;align-items:center;gap:14px}p.lead{color:#9da7b3;margin:.4rem 0 2rem}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:14px}
-.card{display:flex;flex-direction:column;gap:2px;padding:16px 18px;border:1px solid #2b3440;border-radius:10px;background:#151b23;color:inherit;text-decoration:none}
-.card:hover{border-color:#58a6ff}.card span{color:#8b98a5;font-size:.85rem}.card small{color:#6e7a86;margin-top:4px}
+<title>AQUIFER - welcome</title><style>
+:root{color-scheme:dark light;--bg:#0d1117;--fg:#e6edf3;--mut:#8b98a5;--card:#151b23;--line:#2b3440;--code:#1f2630;--acc:#58a6ff}
+@media (prefers-color-scheme:light){:root{--bg:#fff;--fg:#1f2328;--mut:#59636e;--card:#f6f8fa;--line:#d1d9e0;--code:#eaeef2;--acc:#0969da}}
+body{margin:0;font:15px/1.5 system-ui,-apple-system,Segoe UI,sans-serif;background:var(--bg);color:var(--fg)}
+main{max-width:1040px;margin:0 auto;padding:36px 24px}header{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
+h1{font-size:2.1rem;margin:0;display:flex;align-items:center;gap:14px}p.lead{color:var(--mut);margin:.3rem 0 0;flex-basis:100%}
+.btn{margin-left:auto;background:var(--acc);color:#fff;padding:8px 16px;border-radius:8px;text-decoration:none;font-weight:600}
+h2{margin:1.8rem 0 .6rem;font-size:1rem;text-transform:uppercase;letter-spacing:.06em;color:var(--mut)}h3{margin:.2rem 0 .3rem;font-size:.95rem}
+.flow{display:flex;flex-wrap:wrap;gap:6px;align-items:center;font-size:.9rem}.flow b{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 10px;font-weight:600}.flow i{color:var(--mut);font-style:normal}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+.card{display:flex;flex-direction:column;gap:2px;padding:12px 14px;border:1px solid var(--line);border-radius:10px;background:var(--card);color:inherit;text-decoration:none}
+.card:hover{border-color:var(--acc)}.url{color:var(--mut);font-size:.8rem}.role{font-size:.88rem;margin-top:3px}.card small{color:var(--mut);margin-top:3px}
 .dot{display:inline-block;width:9px;height:9px;border-radius:50%;background:#6e7a86;margin-right:8px}.up{background:#3fb950}.down{background:#f85149}
-h2{margin:2.2rem 0 .6rem;font-size:1.1rem}code{background:#1f2630;padding:1px 6px;border-radius:5px}li{margin:.3rem 0}footer{margin-top:2.5rem;color:#6e7a86;font-size:.85rem}
-</style></head><body><main><h1><svg width="44" height="44" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#2563eb"/></linearGradient></defs><rect width="64" height="64" rx="14" fill="url(#g)"/><path d="M10 40 L24 20 L33 31 L40 24 L54 40 Z" fill="#0b1220" opacity=".35"/><path d="M8 44 q6 -5 12 0 t12 0 t12 0 t12 0" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/><path d="M8 52 q6 -5 12 0 t12 0 t12 0 t12 0" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".6"/></svg>AQUIFER</h1><p class="lead">The open-source, on-premise data stack. Project <code>{{PROJECT}}</code>. Green dot: the service answers.</p>
-<div class="grid">{{CARDS}}</div><h2>Try this</h2><ul>{{TRY}}</ul>
-<footer>Development stack bound to localhost. Not for production or real customer data.</footer></main>
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(380px,1fr));gap:18px}dl{margin:0}dt{white-space:nowrap;margin-top:6px}dd{margin:1px 0 0 2px;color:var(--mut);font-size:.85rem}
+code{background:var(--code);padding:1px 6px;border-radius:5px;font-size:.85rem}table{border-collapse:collapse}td{padding:3px 14px 3px 0;vertical-align:top}td:last-child{color:var(--mut)}
+ul{margin:.2rem 0;padding-left:1.2rem}li{margin:.2rem 0}footer{margin-top:1.8rem;color:var(--mut);font-size:.82rem}
+@media print{body{background:#fff;color:#000;font-size:11px}main{padding:0}.btn{display:none}.card{break-inside:avoid}.dot{display:none}}
+</style></head><body><main><header><h1><svg width="40" height="40" viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#22d3ee"/><stop offset="1" stop-color="#2563eb"/></linearGradient></defs><rect width="64" height="64" rx="14" fill="url(#g)"/><path d="M8 44 q6 -5 12 0 t12 0 t12 0 t12 0" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round"/><path d="M8 52 q6 -5 12 0 t12 0 t12 0 t12 0" fill="none" stroke="#fff" stroke-width="3" stroke-linecap="round" opacity=".6"/></svg>Welcome to AQUIFER</h1>{{FIRST}}
+<p class="lead">An open-source data platform running entirely on this machine. Project <code>{{PROJECT}}</code>. A green dot means the service answers.</p></header>
+<h2>How data flows</h2>
+<div class="flow"><b>Kafka / Redpanda</b><i>events &rarr;</i><b>Flink</b><i>&rarr;</i><b>Iceberg tables on MinIO</b><i>&larr; SQL &rarr;</i><b>Trino &middot; DuckDB &middot; dbt</b><i>&rarr;</i><b>Superset dashboards</b><i>&nbsp;&nbsp;scheduled by</i><b>Airflow</b></div>
+<h2>What is running</h2><div class="grid">{{CARDS}}</div>
+<div class="cols"><div><h2>Sample data: iceberg.shop</h2><table>{{TABLES}}</table>
+<p><code>./lakehouse sql "SELECT country, round(sum(net_revenue)) AS revenue FROM shop.daily_revenue GROUP BY 1 ORDER BY 2 DESC"</code></p></div>
+<div><h2>Good first steps</h2><ul><li>Open the shop dashboard, then the streaming one</li><li>Run <code>./lakehouse stream --events 500</code> and watch it update</li>
+<li>Open Redpanda Console to see the <code>shop.orders</code> topic</li><li>Browse the Iceberg files in MinIO</li><li>Trigger the <code>shop_marts</code> DAG in Airflow</li></ul></div></div>
+<h2>Commands (run in the aquifer folder)</h2><div class="cols">{{COMMANDS}}</div>
+<footer>Settings and passwords live in <code>.env</code>; generated files in <code>.pattern/</code>; data in Docker volumes. Something wrong? <code>./lakehouse doctor</code>, then <code>./lakehouse logs &lt;service&gt;</code>. Development stack bound to localhost; not for production or real customer data.</footer></main>
 <script>document.querySelectorAll('[data-probe]').forEach(function(d){fetch(d.dataset.probe,{mode:'no-cors'}).then(function(){d.classList.add('up')}).catch(function(){d.classList.add('down')})})</script>
 </body></html>
 """
