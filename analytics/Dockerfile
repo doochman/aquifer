@@ -1,4 +1,4 @@
-FROM apache/superset:4.1.1
+FROM apache/superset:6.1.0
 
 USER root
 # The upstream image ships neither a PostgreSQL driver nor a Trino dialect.
